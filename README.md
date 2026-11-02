@@ -7,7 +7,6 @@
 [![Version: 1.0](https://img.shields.io/badge/version-1.0-7B68EE)](#version-10-scope)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Platforms: Windows | Linux](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux-0078D4)](#requirements)
-[![Formats: WAV | MP3](https://img.shields.io/badge/formats-WAV%20%7C%20MP3-orange)](#supported-audio-formats)
 
 **Audio Playback Library** is a C++17, single-header library for playing WAV and
 MP3 files on Windows and Linux. Copy `apl.hpp` into your project and include it.
