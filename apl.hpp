@@ -1,6 +1,8 @@
 #ifndef APL_HPP_INCLUDED
 #define APL_HPP_INCLUDED
 
+// APL v1.1
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -166,33 +168,33 @@ public:
             error = why; return nullptr;
         };
         result->file_.open(path, std::ios::binary | std::ios::ate);
-        if (!result->file_) return fail("WAV: impossibile aprire il file.");
+        if (!result->file_) return fail("WAV: cannot open file.");
         const auto end = result->file_.tellg();
-        if (end < std::streamoff(12)) return fail("WAV: header assente o troncato.");
+        if (end < std::streamoff(12)) return fail("WAV: missing or truncated header.");
         const auto fileSize = static_cast<std::uint64_t>(end);
         unsigned char header[12];
-        if (!result->readAt(0, header, sizeof(header))) return fail("WAV: lettura header fallita.");
+        if (!result->readAt(0, header, sizeof(header))) return fail("WAV: failed to read header.");
         if (std::memcmp(header, "RIFF", 4) || std::memcmp(header + 8, "WAVE", 4))
-            return fail("WAV: richiesto RIFF/WAVE little-endian (RF64/RIFX non supportati).");
+            return fail("WAV: little-endian RIFF/WAVE required (RF64/RIFX are not supported).");
         const std::uint64_t riffEnd = std::uint64_t(le32(header + 4)) + 8;
-        if (riffEnd < 12 || riffEnd > fileSize) return fail("WAV: dimensione RIFF non valida o file troncato.");
+        if (riffEnd < 12 || riffEnd > fileSize) return fail("WAV: invalid RIFF size or truncated file.");
         bool haveFormat = false, haveData = false;
         std::uint32_t dataBytes = 0;
         std::uint64_t offset = 12;
         while (offset < riffEnd) {
-            if (riffEnd - offset < 8) return fail("WAV: header di un chunk troncato.");
+            if (riffEnd - offset < 8) return fail("WAV: truncated chunk header.");
             unsigned char chunk[8];
-            if (!result->readAt(offset, chunk, 8)) return fail("WAV: impossibile leggere un chunk.");
+            if (!result->readAt(offset, chunk, 8)) return fail("WAV: cannot read chunk.");
             const std::uint32_t size = le32(chunk + 4);
             const std::uint64_t begin = offset + 8;
             const std::uint64_t next = begin + size + (size & 1u);
-            if (next > riffEnd) return fail("WAV: chunk troncato o padding RIFF mancante.");
+            if (next > riffEnd) return fail("WAV: truncated chunk or missing RIFF padding.");
             if (!std::memcmp(chunk, "fmt ", 4)) {
-                if (haveFormat) return fail("WAV: piu' chunk fmt non supportati.");
-                if (size < 16 || size == 17) return fail("WAV: chunk fmt troppo corto.");
+                if (haveFormat) return fail("WAV: multiple fmt chunks are not supported.");
+                if (size < 16 || size == 17) return fail("WAV: fmt chunk is too short.");
                 unsigned char fmt[40]{};
                 if (!result->readAt(begin, fmt, (std::min)(std::size_t(size), sizeof(fmt))))
-                    return fail("WAV: chunk fmt illeggibile.");
+                    return fail("WAV: cannot read fmt chunk.");
                 const auto tag = le16(fmt);
                 result->format_.channels = le16(fmt + 2);
                 result->format_.sampleRate = le32(fmt + 4);
@@ -200,47 +202,47 @@ public:
                 result->bits_ = le16(fmt + 14);
                 result->validBits_ = result->bits_;
                 if (size >= 18 && std::uint32_t(le16(fmt + 16)) + 18u > size)
-                    return fail("WAV: estensione fmt troncata.");
+                    return fail("WAV: truncated fmt extension.");
                 if (tag == 0xfffe) {
                     if (size < 40 || le16(fmt + 16) < 22)
-                        return fail("WAV: WAVE_FORMAT_EXTENSIBLE troncato.");
+                        return fail("WAV: truncated WAVE_FORMAT_EXTENSIBLE.");
                     result->validBits_ = le16(fmt + 18);
                     if (!result->validBits_) result->validBits_ = result->bits_;
                     if (waveSubtype(fmt + 24, 1)) result->floating_ = false;
                     else if (waveSubtype(fmt + 24, 3)) result->floating_ = true;
-                    else return fail("WAV: sottotipo extensible non supportato (solo PCM/float).");
+                    else return fail("WAV: unsupported extensible subtype (only PCM/float are supported).");
                     const auto mask = le32(fmt + 20);
                     unsigned channelsInMask = 0;
                     for (auto m = mask; m; m >>= 1) channelsInMask += m & 1u;
                     if (mask && channelsInMask != result->format_.channels)
-                        return fail("WAV: channel mask incompatibile con il numero di canali.");
+                        return fail("WAV: channel mask does not match channel count.");
                 } else if (tag == 1 || tag == 3) result->floating_ = tag == 3;
-                else return fail("WAV: codec compresso non supportato (solo PCM/float).");
+                else return fail("WAV: compressed codecs are not supported (only PCM/float are supported).");
                 if (result->format_.channels != 1 && result->format_.channels != 2)
-                    return fail("WAV: supportati solo file mono e stereo.");
-                if (!result->format_.sampleRate) return fail("WAV: sample rate nullo.");
+                    return fail("WAV: only mono and stereo files are supported.");
+                if (!result->format_.sampleRate) return fail("WAV: sample rate must not be zero.");
                 const auto bits = result->bits_;
                 if ((result->floating_ && (bits != 32 || result->validBits_ != 32)) ||
                     (!result->floating_ && bits != 8 && bits != 16 && bits != 24 && bits != 32))
-                    return fail("WAV: supportati PCM 8/16/24/32 bit e float 32 bit.");
+                    return fail("WAV: only PCM 8/16/24/32-bit and float32 are supported.");
                 if (!result->validBits_ || result->validBits_ > bits)
-                    return fail("WAV: numero di bit validi non valido.");
+                    return fail("WAV: invalid valid-bit count.");
                 const auto alignment = result->format_.channels * (bits / 8u);
                 if (result->alignment_ != alignment ||
                     std::uint64_t(result->format_.sampleRate) * alignment != le32(fmt + 8))
-                    return fail("WAV: blockAlign o byteRate incoerente.");
+                    return fail("WAV: inconsistent blockAlign or byteRate.");
                 haveFormat = true;
             } else if (!std::memcmp(chunk, "data", 4)) {
-                if (haveData) return fail("WAV: piu' chunk data non supportati.");
+                if (haveData) return fail("WAV: multiple data chunks are not supported.");
                 result->dataOffset_ = begin;
                 dataBytes = size;
                 haveData = true;
             }
             offset = next;
         }
-        if (!haveFormat || !haveData) return fail("WAV: chunk fmt o data mancante.");
+        if (!haveFormat || !haveData) return fail("WAV: missing fmt or data chunk.");
         if (!dataBytes || dataBytes % result->alignment_)
-            return fail("WAV: dati vuoti o frame PCM incompleto.");
+            return fail("WAV: empty audio data or incomplete PCM frame.");
         result->format_.frames = dataBytes / result->alignment_;
         return result;
     }
@@ -248,12 +250,12 @@ public:
     bool readFrames(std::uint64_t first, std::size_t count, Frame* output,
                     std::size_t& read, std::string& error) override {
         read = 0;
-        if (first > format_.frames) { error = "WAV: posizione di lettura fuori intervallo."; return false; }
+        if (first > format_.frames) { error = "WAV: read position is out of range."; return false; }
         count = static_cast<std::size_t>((std::min)(std::uint64_t(count), format_.frames - first));
         while (read < count) {
             const auto n = (std::min)(std::size_t(4096), count - read);
             if (!readAt(dataOffset_ + (first + read) * alignment_, bytes_.data(), n * alignment_)) {
-                error = "WAV: errore di lettura o file modificato/troncato durante la riproduzione.";
+                error = "WAV: read failed or file was changed/truncated during playback.";
                 return false;
             }
             for (std::size_t i = 0; i < n; ++i) {
@@ -503,6 +505,7 @@ inline constexpr unsigned mp3BandsShort[9][14] = {
     {0, 8, 16, 24, 36, 52, 72, 96, 124, 160, 162, 164, 166, 192},
 };
 
+
 struct Mp3Bits {
     const unsigned char* data = nullptr;
     std::size_t position = 0, limit = 0;
@@ -748,7 +751,6 @@ class Mp3Decoder final : public Decoder {
                 const bool nonzero = packed >= 0 && (unsigned(packed) & (8u >> n));
                 quartet[n] = nonzero ? (bits.get(1) ? -1 : 1) : 0;
             }
-
             if (!bits.good) { bits.good = true; break; }
             for (unsigned n = 0; n < 4; ++n) values[i++] = quartet[n];
         }
@@ -785,7 +787,6 @@ class Mp3Decoder final : public Decoder {
         const bool ms = (h.extension & 2u) != 0, intensity = (h.extension & 1u) != 0;
         bool applied[576]{};
         const auto apply = [&](unsigned start, unsigned end, unsigned stride, unsigned position, unsigned maximum) noexcept {
-
             if (!intensity || (h.mpeg1 ? position >= 7 : maximum && position == maximum)) return;
             float leftGain = 1, rightGain = 1;
             if (h.mpeg1) {
@@ -836,7 +837,6 @@ class Mp3Decoder final : public Decoder {
     }
     void synthesize(float* spectrum, const Mp3Header& h, const Mp3Granule& g, unsigned ch, unsigned gr) noexcept {
         const auto& math = mp3Math();
-
         const unsigned longSubbands = g.block == 2 ? (g.mixed ? 2u : 0u) : 32u;
         for (unsigned sb = 1; sb < longSubbands; ++sb) for (unsigned i = 0; i < 8; ++i) {
             const float upper = spectrum[sb * 18 - 1 - i], lower = spectrum[sb * 18 + i];
@@ -909,23 +909,23 @@ class Mp3Decoder final : public Decoder {
             const auto inside = position - entry.payloadStart;
             const auto n = static_cast<std::size_t>((std::min)(std::uint64_t(size) - inside, end - position));
             if (!readAt(entry.offset + prefix + inside, history_.data() + copied, n)) {
-                error = "MP3: impossibile ricostruire il bit reservoir durante il seek."; return false;
+                error = "MP3: cannot reconstruct bit reservoir during seek."; return false;
             }
             position += n; copied += static_cast<unsigned>(n);
         }
-        if (copied != historySize_) { error = "MP3: bit reservoir incompleto."; return false; }
+        if (copied != historySize_) { error = "MP3: incomplete bit reservoir."; return false; }
         return true;
     }
     bool decode(std::size_t frame, std::string& error) {
         const auto& entry = index_[frame];
         const auto& h = entry.header;
-        if (!readAt(entry.offset, compressed_.data(), h.bytes)) { error = "MP3: frame troncato o errore di lettura."; return false; }
+        if (!readAt(entry.offset, compressed_.data(), h.bytes)) { error = "MP3: truncated frame or read error."; return false; }
         Mp3Side side;
         if (mp3Be32(compressed_.data()) != h.raw || !crcValid(compressed_.data(), h) ||
             !side.parse(compressed_.data() + 4 + (h.crc ? 2 : 0), h)) {
-            error = "MP3: header, CRC o side information non validi."; return false;
+            error = "MP3: invalid header, CRC, or side information."; return false;
         }
-        if (side.back > historySize_) { error = "MP3: riferimento al bit reservoir fuori intervallo."; return false; }
+        if (side.back > historySize_) { error = "MP3: bit reservoir reference is out of range."; return false; }
         const unsigned payload = h.bytes - payloadOffset(h);
         const unsigned size = side.back + payload;
         std::memcpy(main_.data(), history_.data() + historySize_ - side.back, side.back);
@@ -947,11 +947,11 @@ class Mp3Decoder final : public Decoder {
             Mp3Scales scalar[2]{};
             for (unsigned ch = 0; ch < h.channels; ++ch) {
                 auto& g = side.granule[gr][ch];
-                if (cursor + g.partBits > size * 8u) { error = "MP3: main data troncati."; return false; }
+                if (cursor + g.partBits > size * 8u) { error = "MP3: truncated main data."; return false; }
                 bits.position = cursor; bits.limit = cursor + g.partBits; bits.good = true;
                 int values[576]{};
                 if (!scales(bits, h, g, ch, gr, side, previous[ch], scalar[ch]) || !huffman(bits, h, g, values)) {
-                    error = "MP3: scalefactor o codice Huffman non valido."; return false;
+                    error = "MP3: invalid scalefactor or Huffman code."; return false;
                 }
                 requantize(values, spectrum[ch], h, g, scalar[ch]);
                 previous[ch] = scalar[ch]; cursor += g.partBits;
@@ -967,25 +967,24 @@ public:
         auto result = std::make_unique<Mp3Decoder>();
         auto fail = [&](const char* why) -> std::unique_ptr<Mp3Decoder> { error = why; return nullptr; };
         result->file_.open(path, std::ios::binary | std::ios::ate);
-        if (!result->file_) return fail("MP3: impossibile aprire il file.");
+        if (!result->file_) return fail("MP3: cannot open file.");
         const auto fileEnd = result->file_.tellg();
-        if (fileEnd < std::streamoff(4)) return fail("MP3: file vuoto o header troncato.");
+        if (fileEnd < std::streamoff(4)) return fail("MP3: empty file or truncated header.");
         std::uint64_t end = static_cast<std::uint64_t>(fileEnd), offset = 0;
         unsigned char header[128]{};
         if (end >= 10 && result->readAt(0, header, 10) && !std::memcmp(header, "ID3", 3)) {
             if (header[3] < 2 || header[3] > 4 || (header[6] | header[7] | header[8] | header[9]) & 0x80u)
-                return fail("MP3: header ID3v2 non valido.");
+                return fail("MP3: invalid ID3v2 header.");
             const auto size = (std::uint32_t(header[6]) << 21) | (std::uint32_t(header[7]) << 14) |
                               (std::uint32_t(header[8]) << 7) | header[9];
             offset = 10u + std::uint64_t(size) + (header[3] == 4 && (header[5] & 0x10u) ? 10u : 0u);
-            if (offset > end) return fail("MP3: tag ID3v2 troncato.");
+            if (offset > end) return fail("MP3: truncated ID3v2 tag.");
         }
-
         for (unsigned pass = 0; pass < 8; ++pass) {
             if (end >= 128 && result->readAt(end - 128, header, 3) && !std::memcmp(header, "TAG", 3)) { end -= 128; continue; }
             if (end >= 32 && result->readAt(end - 32, header, 32) && !std::memcmp(header, "APETAGEX", 8)) {
                 const auto bytes = le32(header + 12);
-                if (bytes < 32 || bytes > end - offset) return fail("MP3: tag APE non valido.");
+                if (bytes < 32 || bytes > end - offset) return fail("MP3: invalid APE tag.");
                 end -= bytes;
                 if (end >= 32 && result->readAt(end - 32, header, 8) && !std::memcmp(header, "APETAGEX", 8)) end -= 32;
                 continue;
@@ -993,13 +992,13 @@ public:
             if (end >= 10 && result->readAt(end - 10, header, 10) && !std::memcmp(header, "3DI", 3) &&
                 header[3] == 4 && (header[5] & 0x10u)) {
                 if ((header[6] | header[7] | header[8] | header[9]) & 0x80u)
-                    return fail("MP3: footer ID3v2.4 non valido.");
+                    return fail("MP3: invalid ID3v2.4 footer.");
                 const std::uint64_t size = 20u + (std::uint32_t(header[6]) << 21) +
                     (std::uint32_t(header[7]) << 14) + (std::uint32_t(header[8]) << 7) + header[9];
                 unsigned char leading[10]{};
                 if (end < offset || size > end - offset || !result->readAt(end - size, leading, 10) ||
                     std::memcmp(leading, "ID3", 3) || std::memcmp(leading + 3, header + 3, 7))
-                    return fail("MP3: tag ID3v2.4 finale troncato o incoerente.");
+                    return fail("MP3: truncated or inconsistent trailing ID3v2.4 tag.");
                 end -= size; continue;
             }
             break;
@@ -1008,7 +1007,7 @@ public:
         const auto searchEnd = (std::min)(end, offset + 65536);
         bool found = false;
         for (; offset + 4 <= searchEnd; ++offset) {
-            if (!result->readAt(offset, header, 4)) return fail("MP3: errore di lettura dell'header.");
+            if (!result->readAt(offset, header, 4)) return fail("MP3: failed to read header.");
             if (first.parse(mp3Be32(header))) {
                 const auto next = offset + first.bytes;
                 if (next == end) { found = true; break; }
@@ -1017,7 +1016,7 @@ public:
                     following.rate == first.rate && following.channels == first.channels) { found = true; break; }
             }
         }
-        if (!found) return fail("MP3: frame Layer III non trovato (free-format, Layer I/II e altri codec non supportati).");
+        if (!found) return fail("MP3: no Layer III frame found (free-format, Layers I/II, and other codecs are not supported).");
         result->samplesPerFrame_ = first.samples;
         result->format_.sampleRate = first.rate; result->format_.channels = static_cast<std::uint16_t>(first.channels);
         std::uint64_t payloadTotal = 0;
@@ -1030,35 +1029,35 @@ public:
                     if (!result->readAt(i, header, 1) || header[0]) zeroPadding = false;
                 }
                 if (zeroPadding) break;
-                return fail("MP3: sincronizzazione persa o dati non validi tra i frame.");
+                return fail("MP3: lost synchronization or invalid data between frames.");
             }
             if (h.rate != first.rate || h.channels != first.channels || h.samples != first.samples)
-                return fail("MP3: cambio di formato all'interno del file non supportato.");
-            if (h.raw & 3u) return fail("MP3: enfasi/de-enfasi del flusso non supportata.");
-            if (h.bytes > end - offset) return fail("MP3: ultimo frame troncato.");
-            if (!result->readAt(offset, result->compressed_.data(), h.bytes)) return fail("MP3: impossibile leggere un frame.");
+                return fail("MP3: format changes within a file are not supported.");
+            if (h.raw & 3u) return fail("MP3: stream emphasis/de-emphasis is not supported.");
+            if (h.bytes > end - offset) return fail("MP3: truncated final frame.");
+            if (!result->readAt(offset, result->compressed_.data(), h.bytes)) return fail("MP3: cannot read frame.");
             Mp3Side side;
-            if (!crcValid(result->compressed_.data(), h)) return fail("MP3: controllo CRC fallito.");
-            if (!side.parse(result->compressed_.data() + 4 + (h.crc ? 2 : 0), h)) return fail("MP3: side information non valida.");
+            if (!crcValid(result->compressed_.data(), h)) return fail("MP3: CRC check failed.");
+            if (!side.parse(result->compressed_.data() + 4 + (h.crc ? 2 : 0), h)) return fail("MP3: invalid side information.");
             const unsigned payload = h.bytes - payloadOffset(h);
-            if (side.back > payloadTotal) return fail("MP3: bit reservoir mancante all'inizio del file.");
+            if (side.back > payloadTotal) return fail("MP3: missing bit reservoir at the beginning of the file.");
             unsigned budget = 0;
             for (unsigned gr = 0; gr < (h.mpeg1 ? 2u : 1u); ++gr) for (unsigned ch = 0; ch < h.channels; ++ch)
                 budget += side.granule[gr][ch].partBits;
-            if (budget > (side.back + payload) * 8u) return fail("MP3: bit budget del frame non valido.");
+            if (budget > (side.back + payload) * 8u) return fail("MP3: invalid frame bit budget.");
             if (result->index_.empty()) {
                 const auto* bytes = result->compressed_.data();
                 const unsigned at = payloadOffset(h);
                 if (at + 8 <= h.bytes && (!std::memcmp(bytes + at, "Xing", 4) || !std::memcmp(bytes + at, "Info", 4))) {
                     result->firstAudio_ = 1;
                     const auto flags = mp3Be32(bytes + at + 4);
-                    if (flags & ~15u) return fail("MP3: flag Xing/Info non validi.");
+                    if (flags & ~15u) return fail("MP3: invalid Xing/Info flags.");
                     unsigned tag = at + 8;
                     if (flags & 1u) tag += 4;
                     if (flags & 2u) tag += 4;
                     if (flags & 4u) tag += 100;
                     if (flags & 8u) tag += 4;
-                    if (tag > h.bytes) return fail("MP3: header Xing/Info troncato.");
+                    if (tag > h.bytes) return fail("MP3: truncated Xing/Info header.");
                     if (tag + 24 <= h.bytes && (!std::memcmp(bytes + tag, "LAME", 4) ||
                         !std::memcmp(bytes + tag, "Lavc", 4) || !std::memcmp(bytes + tag, "Lavf", 4))) {
                         delay = (unsigned(bytes[tag + 21]) << 4) | (bytes[tag + 22] >> 4);
@@ -1069,12 +1068,11 @@ public:
             result->index_.push_back({offset, payloadTotal, h, side.back});
             payloadTotal += payload; offset += h.bytes;
         }
-        if (result->index_.size() <= result->firstAudio_) return fail("MP3: nessun frame audio.");
+        if (result->index_.size() <= result->firstAudio_) return fail("MP3: no audio frames.");
         const auto raw = std::uint64_t(result->index_.size() - result->firstAudio_) * first.samples;
-
         const std::uint64_t start = padding >= 529 ? std::uint64_t(delay) + 529 : 0;
         const std::uint64_t tail = padding >= 529 ? padding - 529 : 0;
-        if (start + tail >= raw) return fail("MP3: delay/padding gapless non validi.");
+        if (start + tail >= raw) return fail("MP3: invalid gapless delay/padding.");
         result->trimStart_ = start; result->format_.frames = raw - start - tail;
         (void)mp3Math();
         if (!result->reset(result->firstAudio_, error)) return nullptr;
@@ -1085,7 +1083,7 @@ public:
     bool readFrames(std::uint64_t first, std::size_t count, Frame* output,
                     std::size_t& read, std::string& error) override {
         read = 0;
-        if (first > format_.frames) { error = "MP3: posizione di lettura fuori intervallo."; return false; }
+        if (first > format_.frames) { error = "MP3: read position is out of range."; return false; }
         count = static_cast<std::size_t>((std::min)(std::uint64_t(count), format_.frames - first));
         while (read < count) {
             const auto raw = first + read + trimStart_;
@@ -1093,7 +1091,6 @@ public:
             const auto inside = static_cast<std::size_t>(raw % samplesPerFrame_);
             if (frame != cached_) {
                 if (frame != next_) {
-
                     const auto warm = frame > firstAudio_ + 2 ? frame - 2 : firstAudio_;
                     if (!reset(warm, error)) return false;
                 }
@@ -1106,13 +1103,374 @@ public:
     }
 };
 
+class FlacDecoder final : public Decoder {
+    struct Input {
+        std::ifstream* file = nullptr;
+        std::array<unsigned char, 16384> buffer{};
+        std::size_t used = 0, available = 0;
+        std::uint64_t position = 0, end = 0;
+        unsigned current = 0, remaining = 0;
+        std::uint16_t crc16 = 0;
+        std::uint8_t crc8 = 0;
+        bool good = true;
+
+        void reset(std::ifstream& stream, std::uint64_t first, std::uint64_t size) {
+            file = &stream; position = first; end = size;
+            used = available = 0; remaining = 0; good = first <= size;
+            stream.clear(); stream.seekg(static_cast<std::streamoff>(first));
+            good = good && bool(stream);
+        }
+        unsigned byte() {
+            if (!good || position >= end) { good = false; return 0; }
+            if (used == available) {
+                available = static_cast<std::size_t>((std::min)(std::uint64_t(buffer.size()), end - position));
+                file->read(reinterpret_cast<char*>(buffer.data()), static_cast<std::streamsize>(available));
+                if (file->gcount() != static_cast<std::streamsize>(available)) { good = false; return 0; }
+                used = 0;
+            }
+            const unsigned value = buffer[used++]; ++position;
+            crc8 = static_cast<std::uint8_t>(crc8 ^ value);
+            crc16 = static_cast<std::uint16_t>(crc16 ^ (value << 8));
+            for (unsigned i = 0; i < 8; ++i) {
+                crc8 = static_cast<std::uint8_t>((crc8 << 1) ^ ((crc8 & 0x80) ? 0x07 : 0));
+                crc16 = static_cast<std::uint16_t>((crc16 << 1) ^ ((crc16 & 0x8000) ? 0x8005 : 0));
+            }
+            return value;
+        }
+        std::uint64_t get(unsigned count) {
+            std::uint64_t value = 0;
+            while (count && good) {
+                if (!remaining) { current = byte(); remaining = 8; }
+                const unsigned take = (std::min)(count, remaining);
+                remaining -= take; count -= take;
+                value = (value << take) | ((current >> remaining) & ((1u << take) - 1));
+            }
+            return value;
+        }
+        std::int64_t signedValue(unsigned count) {
+            if (!count) return 0;
+            const auto raw = get(count);
+            return static_cast<std::int64_t>(raw) -
+                ((raw & (std::uint64_t(1) << (count - 1))) ? (std::int64_t(1) << count) : 0);
+        }
+        std::uint64_t unary(std::uint64_t limit) {
+            std::uint64_t zeros = 0;
+            while (good) {
+                if (!remaining) { current = byte(); remaining = 8; }
+                const unsigned value = current & ((1u << remaining) - 1);
+                if (!value) {
+                    zeros += remaining; remaining = 0;
+                } else {
+                    while (!(current & (1u << (remaining - 1)))) { --remaining; ++zeros; }
+                    --remaining;
+                    if (zeros > limit) good = false;
+                    return zeros;
+                }
+                if (zeros > limit) { good = false; break; }
+            }
+            return 0;
+        }
+        void skip(std::uint64_t count) {
+            while (count && good) {
+                const unsigned take = static_cast<unsigned>((std::min)(count, std::uint64_t(32)));
+                (void)get(take); count -= take;
+            }
+        }
+    } input_;
+    struct Header {
+        std::uint64_t number = 0;
+        unsigned block = 0, assignment = 0;
+        bool variable = false;
+    };
+    struct Entry {
+        std::uint64_t offset = 0, first = 0, bytes = 0;
+        unsigned block = 0;
+    };
+    std::ifstream file_;
+    SourceFormat format_;
+    std::uint64_t fileSize_ = 0;
+    unsigned bits_ = 0, minimumBlock_ = 0, maximumBlock_ = 0;
+    bool variable_ = false;
+    std::vector<Entry> index_;
+    std::vector<std::int64_t> samples_[2];
+    std::vector<Frame> pcm_;
+    std::size_t cached_ = (std::numeric_limits<std::size_t>::max)();
+
+    bool readAt(std::uint64_t offset, void* out, std::size_t size) {
+        if (offset > fileSize_ || size > fileSize_ - offset) return false;
+        file_.clear(); file_.seekg(static_cast<std::streamoff>(offset));
+        file_.read(static_cast<char*>(out), static_cast<std::streamsize>(size));
+        return file_.gcount() == static_cast<std::streamsize>(size);
+    }
+    static std::uint64_t big(const unsigned char* bytes, unsigned count) noexcept {
+        std::uint64_t value = 0;
+        for (unsigned i = 0; i < count; ++i) value = (value << 8) | bytes[i];
+        return value;
+    }
+    static bool fits(std::int64_t value, unsigned bits) noexcept {
+        const auto limit = std::int64_t(1) << (bits - 1);
+        return value >= -limit && value < limit;
+    }
+    static std::int64_t shift(std::int64_t value, unsigned bits) noexcept {
+        const auto divisor = std::int64_t(1) << bits;
+        return value / divisor - (value < 0 && value % divisor != 0 ? 1 : 0);
+    }
+    bool number(std::uint64_t& value, bool variable) {
+        const auto first = static_cast<unsigned>(input_.get(8));
+        if (first < 128) { value = first; return input_.good; }
+        unsigned length = 0;
+        for (unsigned mask = 128; first & mask; mask >>= 1) ++length;
+        if (length < 2 || length > (variable ? 7u : 6u)) return false;
+        value = first & ((1u << (7 - length)) - 1);
+        for (unsigned i = 1; i < length; ++i) {
+            const auto next = static_cast<unsigned>(input_.get(8));
+            if ((next & 0xc0) != 0x80) return false;
+            value = (value << 6) | (next & 63);
+        }
+        static constexpr std::uint64_t minimum[] = {0, 0, 128, 2048, 65536, 2097152, 67108864, 2147483648ULL};
+        return input_.good && value >= minimum[length] &&
+               value < (std::uint64_t(1) << (variable ? 36 : 31));
+    }
+    bool residual(unsigned block, unsigned order, std::int64_t* samples) {
+        const unsigned method = static_cast<unsigned>(input_.get(2));
+        const unsigned partitionOrder = static_cast<unsigned>(input_.get(4));
+        const unsigned partitions = 1u << partitionOrder;
+        if (method > 1 || block % partitions || block / partitions <= order) return false;
+        const unsigned width = method ? 5 : 4, escape = (1u << width) - 1;
+        unsigned at = order;
+        for (unsigned partition = 0; partition < partitions && input_.good; ++partition) {
+            const unsigned count = block / partitions - (partition == 0 ? order : 0);
+            const unsigned parameter = static_cast<unsigned>(input_.get(width));
+            if (parameter == escape) {
+                const unsigned rawBits = static_cast<unsigned>(input_.get(5));
+                if (!samples) { input_.skip(std::uint64_t(count) * rawBits); at += count; }
+                else for (unsigned i = 0; i < count && input_.good; ++i) samples[at++] = input_.signedValue(rawBits);
+            } else {
+                for (unsigned i = 0; i < count && input_.good; ++i) {
+                    const auto quotient = input_.unary(0xfffffffeULL >> parameter);
+                    const auto folded = (quotient << parameter) | input_.get(parameter);
+                    if (folded > 0xfffffffeULL) return false;
+                    if (samples) samples[at] = (folded & 1) ? -static_cast<std::int64_t>((folded >> 1) + 1) :
+                                                                          static_cast<std::int64_t>(folded >> 1);
+                    ++at;
+                }
+            }
+        }
+        return input_.good && at == block;
+    }
+    bool subframe(unsigned block, unsigned bits, std::vector<std::int64_t>* storage) {
+        if (input_.get(1)) return false;
+        const unsigned type = static_cast<unsigned>(input_.get(6));
+        unsigned wasted = 0;
+        if (input_.get(1)) wasted = static_cast<unsigned>(input_.unary(bits - 1)) + 1;
+        if (!input_.good || wasted >= bits) return false;
+        bits -= wasted;
+        std::int64_t* samples = nullptr;
+        if (storage) { storage->resize(block); samples = storage->data(); }
+        if (type == 0) {
+            const auto value = input_.signedValue(bits);
+            if (samples) std::fill_n(samples, block, value);
+        } else if (type == 1) {
+            if (!samples) input_.skip(std::uint64_t(block) * bits);
+            else for (unsigned i = 0; i < block && input_.good; ++i) samples[i] = input_.signedValue(bits);
+        } else {
+            const bool lpc = type >= 32;
+            const unsigned order = lpc ? type - 31 : type - 8;
+            if ((!lpc && (type < 8 || type > 12)) || order > block) return false;
+            for (unsigned i = 0; i < order; ++i) {
+                const auto value = input_.signedValue(bits);
+                if (samples) samples[i] = value;
+            }
+            std::int64_t coefficients[32]{};
+            unsigned rightShift = 0;
+            if (lpc) {
+                const unsigned precision = static_cast<unsigned>(input_.get(4)) + 1;
+                const auto signedShift = input_.signedValue(5);
+                if (precision == 16 || signedShift < 0) return false;
+                rightShift = static_cast<unsigned>(signedShift);
+                for (unsigned i = 0; i < order; ++i) coefficients[i] = input_.signedValue(precision);
+            } else {
+                static constexpr int fixed[5][4] = {{0,0,0,0}, {1,0,0,0}, {2,-1,0,0}, {3,-3,1,0}, {4,-6,4,-1}};
+                for (unsigned i = 0; i < order; ++i) coefficients[i] = fixed[order][i];
+            }
+            if (!residual(block, order, samples)) return false;
+            if (samples) for (unsigned i = order; i < block; ++i) {
+                std::int64_t prediction = 0;
+                for (unsigned j = 0; j < order; ++j) prediction += coefficients[j] * samples[i - j - 1];
+                samples[i] += shift(prediction, rightShift);
+                if (!fits(samples[i], bits)) return false;
+            }
+        }
+        if (samples && wasted) for (unsigned i = 0; i < block; ++i) samples[i] *= std::int64_t(1) << wasted;
+        return input_.good;
+    }
+    bool frame(Header& header, bool decode, std::string& error) {
+        auto fail = [&](const char* why) { error = why; return false; };
+        input_.crc8 = 0; input_.crc16 = 0;
+        if (input_.remaining || input_.get(15) != 0x7ffc) return fail("FLAC: invalid frame synchronization or reserved bit.");
+        header.variable = input_.get(1) != 0;
+        const unsigned blockCode = static_cast<unsigned>(input_.get(4));
+        const unsigned rateCode = static_cast<unsigned>(input_.get(4));
+        header.assignment = static_cast<unsigned>(input_.get(4));
+        const unsigned depthCode = static_cast<unsigned>(input_.get(3));
+        if (input_.get(1) || !blockCode || rateCode == 15 || depthCode == 3 || header.assignment > 10)
+            return fail("FLAC: invalid or reserved frame header.");
+        if (!number(header.number, header.variable)) return fail("FLAC: invalid or truncated frame/sample number.");
+        if (blockCode == 1) header.block = 192;
+        else if (blockCode <= 5) header.block = 576u << (blockCode - 2);
+        else if (blockCode == 6) header.block = static_cast<unsigned>(input_.get(8)) + 1;
+        else if (blockCode == 7) header.block = static_cast<unsigned>(input_.get(16)) + 1;
+        else header.block = 256u << (blockCode - 8);
+        static constexpr unsigned rates[] = {0,88200,176400,192000,8000,16000,22050,24000,32000,44100,48000,96000};
+        unsigned rate = rateCode == 0 ? format_.sampleRate : rateCode < 12 ? rates[rateCode] :
+                        static_cast<unsigned>(input_.get(rateCode == 12 ? 8 : 16)) * (rateCode == 12 ? 1000u : rateCode == 14 ? 10u : 1u);
+        static constexpr unsigned depths[] = {0,8,12,0,16,20,24,32};
+        const unsigned depth = depthCode ? depths[depthCode] : bits_;
+        const unsigned channels = header.assignment <= 7 ? header.assignment + 1 : 2;
+        (void)input_.get(8);
+        if (!input_.good || input_.crc8) return fail("FLAC: invalid header CRC or truncated header.");
+        if (rate != format_.sampleRate || depth != bits_ || channels != format_.channels)
+            return fail("FLAC: frame format differs from STREAMINFO (only mono and stereo are supported).");
+        if (header.block > maximumBlock_) return fail("FLAC: block exceeds the declared maximum size.");
+        for (unsigned ch = 0; ch < channels; ++ch) {
+            const unsigned extra = (header.assignment == 8 && ch == 1) ||
+                                   (header.assignment == 9 && ch == 0) || (header.assignment == 10 && ch == 1);
+            if (!subframe(header.block, depth + extra, decode ? &samples_[ch] : nullptr))
+                return fail("FLAC: invalid or truncated subframe, predictor, or residual data.");
+        }
+        const unsigned padding = input_.remaining;
+        if (padding && input_.get(padding)) return fail("FLAC: frame padding must be zero.");
+        (void)input_.get(16);
+        if (!input_.good || input_.crc16) return fail("FLAC: invalid frame CRC or truncated data.");
+        if (decode) {
+            pcm_.resize(header.block);
+            const double scale = std::ldexp(1.0, 1 - static_cast<int>(bits_));
+            for (unsigned i = 0; i < header.block; ++i) {
+                std::int64_t left = samples_[0][i], right = channels == 1 ? left : samples_[1][i];
+                if (header.assignment == 8) right = left - right;
+                else if (header.assignment == 9) left += right;
+                else if (header.assignment == 10) {
+                    const auto mid = left * 2 + (right % 2 != 0 ? 1 : 0);
+                    left = shift(mid + right, 1); right = shift(mid - right, 1);
+                }
+                if (!fits(left, bits_) || !fits(right, bits_)) return fail("FLAC: decoded sample is out of range.");
+                pcm_[i] = {static_cast<float>(double(left) * scale), static_cast<float>(double(right) * scale)};
+            }
+        }
+        return true;
+    }
+public:
+    const SourceFormat& format() const noexcept override { return format_; }
+    static std::unique_ptr<FlacDecoder> open(const std::filesystem::path& path, std::string& error) {
+        auto result = std::make_unique<FlacDecoder>();
+        auto fail = [&](const char* why) -> std::unique_ptr<FlacDecoder> { error = why; return nullptr; };
+        result->file_.open(path, std::ios::binary | std::ios::ate);
+        if (!result->file_) return fail("FLAC: cannot open file.");
+        const auto end = result->file_.tellg();
+        if (end < std::streamoff(42)) return fail("FLAC: missing or truncated signature or STREAMINFO.");
+        result->fileSize_ = static_cast<std::uint64_t>(end);
+        unsigned char signature[4];
+        if (!result->readAt(0, signature, 4) || std::memcmp(signature, "fLaC", 4))
+            return fail("FLAC: a native FLAC file with the fLaC signature is required.");
+        bool last = false, haveInfo = false;
+        std::uint64_t offset = 4, declaredFrames = 0;
+        unsigned minimumFrame = 0, maximumFrame = 0;
+        while (!last) {
+            unsigned char meta[4];
+            if (!result->readAt(offset, meta, 4)) return fail("FLAC: truncated metadata header.");
+            last = (meta[0] & 0x80) != 0;
+            const unsigned type = meta[0] & 0x7f;
+            const auto size = static_cast<unsigned>(big(meta + 1, 3));
+            offset += 4;
+            if (size > result->fileSize_ - offset) return fail("FLAC: truncated metadata block.");
+            if (type == 127 || (!haveInfo && type != 0)) return fail("FLAC: invalid metadata type or STREAMINFO is not the first block.");
+            if (type == 0) {
+                if (haveInfo || size != 34) return fail("FLAC: duplicate STREAMINFO or invalid block size.");
+                unsigned char info[34];
+                if (!result->readAt(offset, info, 34)) return fail("FLAC: cannot read STREAMINFO.");
+                result->minimumBlock_ = static_cast<unsigned>(big(info, 2));
+                result->maximumBlock_ = static_cast<unsigned>(big(info + 2, 2));
+                minimumFrame = static_cast<unsigned>(big(info + 4, 3));
+                maximumFrame = static_cast<unsigned>(big(info + 7, 3));
+                const auto packed = big(info + 10, 8);
+                result->format_.sampleRate = static_cast<std::uint32_t>(packed >> 44);
+                result->format_.channels = static_cast<std::uint16_t>(((packed >> 41) & 7) + 1);
+                result->bits_ = static_cast<unsigned>(((packed >> 36) & 31) + 1);
+                declaredFrames = packed & 0xfffffffffULL;
+                if (!result->format_.sampleRate || result->bits_ < 4 || result->minimumBlock_ < 16 ||
+                    result->maximumBlock_ < result->minimumBlock_ || (minimumFrame && maximumFrame && minimumFrame > maximumFrame))
+                    return fail("FLAC: invalid STREAMINFO parameters.");
+                if (result->format_.channels > 2) return fail("FLAC: only mono and stereo files are supported.");
+                haveInfo = true;
+            }
+            offset += size;
+        }
+        result->input_.reset(result->file_, offset, result->fileSize_);
+        while (result->input_.position < result->fileSize_) {
+            const auto start = result->input_.position;
+            Header header;
+            if (!result->frame(header, false, error)) return nullptr;
+            if (header.number != (header.variable ? result->format_.frames : std::uint64_t(result->index_.size())))
+                return fail("FLAC: nonconsecutive frame/sample numbering.");
+            if (!result->index_.empty()) {
+                const auto previous = result->index_.back().block;
+                if (header.variable != result->variable_ || previous < result->minimumBlock_ ||
+                    (!header.variable && (previous != result->index_.front().block || header.block > previous)))
+                    return fail("FLAC: inconsistent blocking strategy or block size.");
+            } else result->variable_ = header.variable;
+            const auto bytes = result->input_.position - start;
+            if ((minimumFrame && bytes < minimumFrame) || (maximumFrame && bytes > maximumFrame))
+                return fail("FLAC: frame size is outside the declared bounds.");
+            if (header.block > 0xfffffffffULL - result->format_.frames)
+                return fail("FLAC: total sample count is too large.");
+            result->index_.push_back({start, result->format_.frames, bytes, header.block});
+            result->format_.frames += header.block;
+        }
+        if (result->index_.empty() || (declaredFrames && declaredFrames != result->format_.frames))
+            return fail("FLAC: missing audio or sample count differs from STREAMINFO.");
+        Frame check; std::size_t read = 0;
+        if (!result->readFrames(0, 1, &check, read, error)) return nullptr;
+        return result;
+    }
+    bool readFrames(std::uint64_t first, std::size_t count, Frame* output,
+                    std::size_t& read, std::string& error) override {
+        read = 0;
+        if (first > format_.frames) { error = "FLAC: read position is out of range."; return false; }
+        count = static_cast<std::size_t>((std::min)(std::uint64_t(count), format_.frames - first));
+        if (!count) return true;
+        auto found = std::upper_bound(index_.begin(), index_.end(), first,
+            [](std::uint64_t sample, const Entry& entry) { return sample < entry.first; });
+        std::size_t index = static_cast<std::size_t>(found - index_.begin() - 1);
+        while (read < count) {
+            const auto& entry = index_[index];
+            if (cached_ != index) {
+                cached_ = (std::numeric_limits<std::size_t>::max)();
+                if (input_.position != entry.offset || !input_.good) input_.reset(file_, entry.offset, fileSize_);
+                Header header;
+                if (!frame(header, true, error)) return false;
+                if (header.block != entry.block || header.variable != variable_ ||
+                    header.number != (variable_ ? entry.first : std::uint64_t(index)) || input_.position - entry.offset != entry.bytes) {
+                    error = "FLAC: file was changed during playback."; return false;
+                }
+                cached_ = index;
+            }
+            const auto inside = static_cast<std::size_t>(first + read - entry.first);
+            const auto take = (std::min)(count - read, std::size_t(entry.block) - inside);
+            std::copy_n(pcm_.data() + inside, take, output + read);
+            read += take; ++index;
+        }
+        return true;
+    }
+};
+
 inline std::unique_ptr<Decoder> openDecoder(const std::filesystem::path& path, std::string& error) {
     std::ifstream probe(path, std::ios::binary);
-    if (!probe) { error = "APL: impossibile aprire il file audio."; return nullptr; }
+    if (!probe) { error = "APL: cannot open audio file."; return nullptr; }
     unsigned char signature[4]{};
     probe.read(reinterpret_cast<char*>(signature), 4);
     if (!std::memcmp(signature, "RIFF", 4) || !std::memcmp(signature, "RIFX", 4) || !std::memcmp(signature, "RF64", 4))
         return WavDecoder::open(path, error);
+    if (!std::memcmp(signature, "fLaC", 4)) return FlacDecoder::open(path, error);
     return Mp3Decoder::open(path, error);
 }
 
@@ -1181,7 +1539,6 @@ struct Timeline {
         };
         Frame result{cubic(a.left, b.left, c.left, d.left),
                      cubic(a.right, b.right, c.right, d.right)};
-
         if (loops >= 0) {
             const float gain = static_cast<float>((std::min)(1.0,
                 (static_cast<double>(total(loops)) - t) / (sourceRate * rampSeconds)));
@@ -1220,7 +1577,7 @@ public:
             if (!decoder_.readFrames(first, 2048, page->frames.data(), read, error) ||
                 index - first >= read) {
                 good = false;
-                if (error.empty()) error = "APL: frame audio richiesto non disponibile.";
+                if (error.empty()) error = "APL: requested audio frame is unavailable.";
                 return {};
             }
             page->first = first;
@@ -1311,7 +1668,6 @@ public:
     bool pop(std::uint64_t generation, StreamFrame& f) noexcept {
         auto r = read_.load(std::memory_order_relaxed);
         const auto end = write_.load(std::memory_order_acquire);
-
         while (r != end) {
             const auto item = data_[r & (capacity_ - 1)];
             ++r;
@@ -1391,7 +1747,7 @@ struct Voice {
         } catch (const std::exception& e) {
             errors->set(e.what()); streamFailed.store(true);
         } catch (...) {
-            errors->set("APL: errore inatteso nel thread streaming."); streamFailed.store(true);
+            errors->set("APL: unexpected error in the streaming thread."); streamFailed.store(true);
         }
     }
 };
@@ -1405,7 +1761,6 @@ public:
     virtual void shutdown() noexcept = 0;
     virtual std::uint32_t sampleRate() const noexcept = 0;
     virtual std::int32_t failure() const noexcept = 0;
-
     virtual std::string failureMessage() const = 0;
 };
 
@@ -1443,7 +1798,8 @@ inline std::string hresultText(std::int32_t result) {
     hex[8] = 0;
     char* message = nullptr;
     const DWORD n = FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
-                                   FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, code, 0,
+                                   FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, code,
+                                   MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US),
                                    reinterpret_cast<char*>(&message), 0, nullptr);
     std::string text = std::string("WASAPI HRESULT 0x") + hex;
     if (n && message) { text += ": "; text.append(message, n); }
@@ -1506,7 +1862,6 @@ inline void encodeDevice(const Frame* source, std::size_t frames, unsigned char*
                 else { const double value = sample; std::memcpy(p, &value, 8); }
             } else {
                 const double scale = static_cast<double>(std::uint64_t(1) << (f.validBits - 1));
-
                 const double noise = f.validBits == 16 && sample != 0.0f ? dither.tpdf() : 0.0;
                 double quantized = std::floor(static_cast<double>(sample) * scale + noise + 0.5);
                 quantized = (std::max)(-scale, (std::min)(scale - 1.0, quantized));
@@ -1555,12 +1910,12 @@ class WasapiBackend final : public Backend {
         if (!check(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
                                     __uuidof(IMMDeviceEnumerator),
                                     reinterpret_cast<void**>(enumerator.put())), "CoCreateInstance")) return;
-        if (!check(enumerator->GetDefaultAudioEndpoint(eRender, eConsole, device.put()), "Dispositivo predefinito")) return;
+        if (!check(enumerator->GetDefaultAudioEndpoint(eRender, eConsole, device.put()), "Default output device")) return;
         if (!check(device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
                                     reinterpret_cast<void**>(client.put())), "IAudioClient")) return;
         if (!check(client->GetMixFormat(&mix.value), "GetMixFormat")) return;
         DeviceFormat format;
-        if (!format.parse(mix.value)) { signal(false, "WASAPI: formato di mix del dispositivo non supportato."); return; }
+        if (!format.parse(mix.value)) { signal(false, "WASAPI: device mix format is not supported."); return; }
         rate_ = format.rate;
         if (!check(client->Initialize(AUDCLNT_SHAREMODE_SHARED,
                                       AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_NOPERSIST,
@@ -1574,14 +1929,13 @@ class WasapiBackend final : public Backend {
         if (!check(client->GetBufferSize(&bufferFrames), "GetBufferSize")) return;
         std::vector<Frame> scratch(bufferFrames);
         BYTE* data = nullptr;
-        if (!check(render->GetBuffer(bufferFrames, &data), "GetBuffer iniziale")) return;
-        if (!check(render->ReleaseBuffer(bufferFrames, AUDCLNT_BUFFERFLAGS_SILENT), "ReleaseBuffer iniziale")) return;
+        if (!check(render->GetBuffer(bufferFrames, &data), "Initial GetBuffer")) return;
+        if (!check(render->ReleaseBuffer(bufferFrames, AUDCLNT_BUFFERFLAGS_SILENT), "Initial ReleaseBuffer")) return;
         if (!check(client->Start(), "Start")) return;
         signal(true);
         Dither dither;
         const HANDLE handles[2] = {stop_.value, event.value};
         for (;;) {
-
             const DWORD wait = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
             if (wait == WAIT_OBJECT_0) break;
             if (wait != WAIT_OBJECT_0 + 1) {
@@ -1595,7 +1949,6 @@ class WasapiBackend final : public Backend {
             if (!available) continue;
             hr = render->GetBuffer(available, &data);
             if (FAILED(hr)) { failure_.store(static_cast<std::int32_t>(hr)); break; }
-
             callback_(context_, scratch.data(), available, rate_);
             encodeDevice(scratch.data(), available, data, format, dither);
             hr = render->ReleaseBuffer(available, 0);
@@ -1610,9 +1963,8 @@ class WasapiBackend final : public Backend {
             try { signal(false, e.what()); } catch (...) {}
         } catch (...) {
             failure_.store(static_cast<std::int32_t>(E_FAIL));
-            try { signal(false, "WASAPI: errore inatteso nel thread audio."); } catch (...) {}
+            try { signal(false, "WASAPI: unexpected error in the audio thread."); } catch (...) {}
         }
-
         { std::lock_guard<std::mutex> lock(startupMutex_); if (!ready_) { ready_ = true; success_ = false; } }
         startupCv_.notify_one();
     }
@@ -1621,12 +1973,12 @@ public:
     bool init(RenderCallback callback, void* context, std::string& error) override {
         callback_ = callback; context_ = context;
         stop_.value = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-        if (!stop_.value) { error = "WASAPI: impossibile creare l'evento di arresto."; return false; }
+        if (!stop_.value) { error = "WASAPI: cannot create stop event."; return false; }
         thread_ = std::thread([this] { run(); });
         std::unique_lock<std::mutex> lock(startupMutex_);
         startupCv_.wait(lock, [this] { return ready_; });
         error = startupError_;
-        if (!success_ && error.empty()) error = "WASAPI: inizializzazione fallita.";
+        if (!success_ && error.empty()) error = "WASAPI: initialization failed.";
         return success_;
     }
     void shutdown() noexcept override {
@@ -1650,7 +2002,7 @@ class AlsaApi {
     void* module_ = nullptr;
     template<class Function> bool bind(Function& fn, const char* name, std::string& error) {
         void* address = ::dlsym(module_, name);
-        if (!address) { error = std::string("ALSA: simbolo di sistema mancante: ") + name; return false; }
+        if (!address) { error = std::string("ALSA: missing system symbol: ") + name; return false; }
         static_assert(sizeof(fn) == sizeof(address), "APL requires POSIX dlsym function pointers.");
         std::memcpy(&fn, &address, sizeof(fn));
         return true;
@@ -1697,7 +2049,7 @@ public:
         module_ = ::dlopen("libasound.so.2", RTLD_NOW | RTLD_LOCAL);
         if (!module_) {
             const char* why = ::dlerror();
-            error = std::string("ALSA: libasound.so.2 non disponibile: ") + (why ? why : "dlopen fallita");
+            error = std::string("ALSA: libasound.so.2 is unavailable: ") + (why ? why : "dlopen failed");
             return false;
         }
         return bind(open, "snd_pcm_open", error) && bind(close, "snd_pcm_close", error) &&
@@ -1742,7 +2094,6 @@ inline void encodeAlsa(const Frame* source, std::size_t frames, unsigned char* d
                        ch == 0 ? source[i].left : ch == 1 ? source[i].right : 0.0f;
         sample = clampOutput(sample);
         unsigned char* out = destination + (i * channels + ch) * bytes;
-
         if (format == AlsaSample::Float32) std::memcpy(out, &sample, sizeof(sample));
         else {
             const double scale = format == AlsaSample::Int16 ? 32768.0 : 2147483648.0;
@@ -1768,7 +2119,7 @@ class AlsaBackend final : public Backend {
     bool ready_ = false, success_ = false;
     std::string startupError_, deviceName_;
     std::atomic<std::int32_t> failure_{0};
-    std::atomic<const char*> failedOperation_{"dispositivo"};
+    std::atomic<const char*> failedOperation_{"device"};
     std::uint32_t rate_ = 0;
     RenderCallback callback_ = nullptr;
     void* context_ = nullptr;
@@ -1791,8 +2142,8 @@ class AlsaBackend final : public Backend {
         if (stop_.load(std::memory_order_acquire)) return false;
         pollfd fd{stopEvent_.value, POLLIN, 0};
         const int result = ::poll(&fd, 1, milliseconds);
-        if (result < 0 && errno != EINTR) { fail(-errno, "poll arresto"); return false; }
-        if (fd.revents & (POLLERR | POLLNVAL | POLLHUP)) { fail(-EIO, "evento di arresto"); return false; }
+        if (result < 0 && errno != EINTR) { fail(-errno, "stop poll"); return false; }
+        if (fd.revents & (POLLERR | POLLNVAL | POLLHUP)) { fail(-EIO, "stop event"); return false; }
         return !stop_.load(std::memory_order_acquire) && !(fd.revents & POLLIN);
     }
     void runDevice() {
@@ -1804,9 +2155,8 @@ class AlsaBackend final : public Backend {
             AlsaApi& api; AlsaHw* hw = nullptr; AlsaSw* sw = nullptr;
             ~ParamsOwner() { if (sw) api.swFree(sw); if (hw) api.hwFree(hw); }
         } params{api_};
-
-        if (!check(api_.open(&pcm.value, deviceName_.c_str(), 0, 1), "apertura PCM")) return;
-        if (!check(api_.hwMalloc(&params.hw), "allocazione hw_params")) return;
+        if (!check(api_.open(&pcm.value, deviceName_.c_str(), 0, 1), "PCM open")) return;
+        if (!check(api_.hwMalloc(&params.hw), "hw_params allocation")) return;
         const std::uint16_t endianProbe = 1;
         const bool little = *reinterpret_cast<const unsigned char*>(&endianProbe) == 1;
         const char* names[3] = {little ? "FLOAT_LE" : "FLOAT_BE",
@@ -1817,7 +2167,6 @@ class AlsaBackend final : public Backend {
         int result = -EINVAL;
         bool configured = false;
         for (unsigned attempt = 0; attempt < 3 && !configured; ++attempt) {
-
             channels = 2; rate = 48000; period = 480; buffer = 1920;
             int direction = 0;
             const int format = api_.formatValue(names[attempt]);
@@ -1838,18 +2187,18 @@ class AlsaBackend final : public Backend {
             sampleFormat = attempt == 0 ? AlsaSample::Float32 : attempt == 1 ? AlsaSample::Int32 : AlsaSample::Int16;
             configured = true;
         }
-        if (!configured) { check(result, "negoziazione formato PCM"); return; }
+        if (!configured) { check(result, "PCM format negotiation"); return; }
         int direction = 0;
-        if (!check(api_.getRate(params.hw, &rate, &direction), "frequenza PCM") ||
-            !check(api_.getChannels(params.hw, &channels), "canali PCM") ||
-            !check(api_.getPeriod(params.hw, &period, &direction), "periodo PCM") ||
+        if (!check(api_.getRate(params.hw, &rate, &direction), "PCM sample rate") ||
+            !check(api_.getChannels(params.hw, &channels), "PCM channels") ||
+            !check(api_.getPeriod(params.hw, &period, &direction), "PCM period") ||
             !check(api_.getBuffer(params.hw, &buffer), "buffer PCM")) return;
         if (!rate || rate > 768000 || !channels || channels > 32 || !period ||
             buffer < period || buffer > 262144) {
-            check(-EINVAL, "dimensioni/formato PCM non supportati"); return;
+            check(-EINVAL, "unsupported PCM size/format"); return;
         }
         rate_ = rate;
-        if (!check(api_.swMalloc(&params.sw), "allocazione sw_params") ||
+        if (!check(api_.swMalloc(&params.sw), "sw_params allocation") ||
             !check(api_.swCurrent(pcm.value, params.sw), "sw_params_current") ||
             !check(api_.swAvailable(pcm.value, params.sw, period), "avail_min") ||
             !check(api_.swStart(pcm.value, params.sw, period), "start_threshold") ||
@@ -1857,13 +2206,13 @@ class AlsaBackend final : public Backend {
             !check(api_.prepare(pcm.value), "prepare")) return;
         const int descriptorCount = api_.pollCount(pcm.value);
         if (descriptorCount < 0) { check(descriptorCount, "poll_descriptors_count"); return; }
-        if (descriptorCount > 256) { check(-EINVAL, "troppi descrittori PCM"); return; }
+        if (descriptorCount > 256) { check(-EINVAL, "too many PCM descriptors"); return; }
         const auto count = static_cast<unsigned>(descriptorCount);
         std::vector<pollfd> descriptors(std::size_t(count) + 1);
         if (count) {
             const int filled = api_.pollDescriptors(pcm.value, descriptors.data(), count);
             if (!check(filled, "poll_descriptors")) return;
-            if (filled != descriptorCount) { check(-EIO, "numero descrittori PCM incoerente"); return; }
+            if (filled != descriptorCount) { check(-EIO, "inconsistent PCM descriptor count"); return; }
         }
         descriptors[count] = {stopEvent_.value, POLLIN, 0};
         const std::size_t stride = std::size_t(channels) * (sampleFormat == AlsaSample::Int16 ? 2u : 4u);
@@ -1888,8 +2237,7 @@ class AlsaBackend final : public Backend {
                 const int status = api_.pollRevents(pcm.value, descriptors.data(), count, &events);
                 if (status < 0) { fail(status, "poll_revents"); return false; }
             }
-            if (events & (POLLNVAL | POLLHUP)) { fail(-ENODEV, "dispositivo scollegato"); return false; }
-
+            if (events & (POLLNVAL | POLLHUP)) { fail(-ENODEV, "PCM device disconnected"); return false; }
             return waited == 0 || events != 0 || waitStop(1);
         };
         auto recover = [&](int error) noexcept {
@@ -1902,10 +2250,10 @@ class AlsaBackend final : public Backend {
             }
             if (error == -EPIPE || error == -ESTRPIPE) {
                 const int prepared = api_.prepare(pcm.value);
-                if (prepared < 0) { fail(prepared, "prepare dopo XRUN/suspend"); return false; }
+                if (prepared < 0) { fail(prepared, "prepare after XRUN/suspend"); return false; }
                 prime = buffer; due = Clock::now(); return true;
             }
-            fail(error, "trasferimento PCM"); return false;
+            fail(error, "PCM transfer"); return false;
         };
         signal(true);
         while (!stop_.load(std::memory_order_acquire)) {
@@ -1915,11 +2263,9 @@ class AlsaBackend final : public Backend {
             if (!available) { if (!waitDevice()) break; continue; }
             const auto free = (std::min)(static_cast<AlsaFrames>(available), buffer);
             if (!prime && !pending && free < period) {
-
                 if (!waitDevice()) break;
                 continue;
             }
-
             if (!prime && !pending && free == buffer && now < due) {
                 const auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(due - now).count();
                 if (!waitStop(static_cast<int>((std::min)(std::int64_t(50), std::int64_t(delta) + 1)))) break;
@@ -1932,18 +2278,16 @@ class AlsaBackend final : public Backend {
                 const AlsaResult written = api_.write(pcm.value, bytes, n);
                 if (written < 0) { if (!recover(static_cast<int>(written))) break; continue; }
                 if (!written) { if (!waitStop(1)) break; continue; }
-                if (static_cast<AlsaFrames>(written) > n) { fail(-EIO, "conteggio writei non valido"); break; }
+                if (static_cast<AlsaFrames>(written) > n) { fail(-EIO, "invalid writei count"); break; }
                 if (priming) { prime -= static_cast<AlsaFrames>(written); if (!prime) due = Clock::now(); }
                 else { pending -= static_cast<AlsaFrames>(written); offset += static_cast<AlsaFrames>(written); }
                 continue;
             }
             const auto n = (std::min)(free, period);
             if (free < buffer) due = now;
-
             callback_(context_, scratch.data(), static_cast<std::size_t>(n), rate_);
             encodeAlsa(scratch.data(), static_cast<std::size_t>(n), encoded.data(), channels, sampleFormat, dither);
             pending = n; offset = 0;
-
             due = (std::max)(due, now - bufferTime) +
                   std::chrono::nanoseconds(static_cast<std::int64_t>(n) * 1000000000LL / rate);
         }
@@ -1951,11 +2295,11 @@ class AlsaBackend final : public Backend {
     void run() noexcept {
         try { runDevice(); }
         catch (const std::exception& e) {
-            fail(-ENOMEM, "thread audio");
+            fail(-ENOMEM, "audio thread");
             try { signal(false, e.what()); } catch (...) {}
         } catch (...) {
-            fail(-EIO, "thread audio");
-            try { signal(false, "ALSA: errore inatteso nel thread audio."); } catch (...) {}
+            fail(-EIO, "audio thread");
+            try { signal(false, "ALSA: unexpected error in the audio thread."); } catch (...) {}
         }
         { std::lock_guard<std::mutex> lock(startupMutex_); if (!ready_) { ready_ = true; success_ = false; } }
         startupCv_.notify_one();
@@ -1973,7 +2317,7 @@ public:
         std::unique_lock<std::mutex> lock(startupMutex_);
         startupCv_.wait(lock, [this] { return ready_; });
         error = startupError_;
-        if (!success_ && error.empty()) error = "ALSA: inizializzazione fallita.";
+        if (!success_ && error.empty()) error = "ALSA: initialization failed.";
         return success_;
     }
     void shutdown() noexcept override {
@@ -1991,7 +2335,7 @@ public:
         if (!code) return {};
         const char* why = api_.errorText ? api_.errorText(code) : std::strerror(-code);
         return std::string("ALSA (") + deviceName_ + "), " + failedOperation_.load() + ": " +
-               (why ? why : "errore sconosciuto") + " (" + std::to_string(code) + ")";
+               (why ? why : "unknown error") + " (" + std::to_string(code) + ")";
     }
 };
 
@@ -1999,7 +2343,7 @@ public:
 class UnsupportedBackend final : public Backend {
 public:
     bool init(RenderCallback, void*, std::string& error) override {
-        error = "APL: backend disponibili su Windows (WASAPI) e Linux (ALSA)."; return false;
+        error = "APL: audio backends are available on Windows (WASAPI) and Linux (ALSA)."; return false;
     }
     void shutdown() noexcept override {}
     std::uint32_t sampleRate() const noexcept override { return 0; }
@@ -2040,7 +2384,6 @@ class Engine {
             a.pendingLoops = next.loops; a.pendingSeek = true;
         }
         if (next.action != a.controls.action) {
-
             if (next.transport == Transport::Playing && a.finished && !a.pendingSeek) {
                 a.pendingPosition = 0; a.pendingLoops = next.loops; a.pendingSeek = true;
             }
@@ -2085,14 +2428,12 @@ class Engine {
                 a.lastSample = sample; a.starvation = 1.0f;
                 gain = a.gate.next();
             } else {
-
                 a.starvation = (std::max)(0.0f, a.starvation - decay);
                 sample = a.lastSample;
                 gain = a.gate.current * a.starvation;
                 if (a.starvation == 0) a.gate.reset(0);
                 if (!a.desiredPlaying || a.pendingSeek) (void)a.gate.next();
             }
-
             output[i].left = addAudio(output[i].left, finiteAudio(sample.left * left * gain));
             output[i].right = addAudio(output[i].right, finiteAudio(sample.right * right * gain));
         }
@@ -2160,7 +2501,6 @@ public:
             Voice* voice = slot.load(std::memory_order_acquire);
             if (voice && renderVoice(*voice, output, count, rate)) {
                 slot.store(nullptr, std::memory_order_release);
-
                 voice->detached.store(true, std::memory_order_release);
             }
         }
@@ -2264,7 +2604,7 @@ public:
             if (!engine->init(error)) { errors_->set(error); return false; }
             engine_ = std::move(engine); errors_->set(""); return true;
         } catch (const std::exception& e) { errors_->set(e.what()); return false; }
-        catch (...) { errors_->set("APL: inizializzazione fallita."); return false; }
+        catch (...) { errors_->set("APL: initialization failed."); return false; }
     }
     void shutdown() noexcept {
         std::lock_guard<std::mutex> lock(lifecycle_);
@@ -2278,10 +2618,10 @@ public:
     }
     Sound load(const std::filesystem::path& path, LoadMode mode = LoadMode::Memory) {
         std::lock_guard<std::mutex> lock(lifecycle_);
-        if (!engine_) { errors_->set("APL: chiamare Player::init prima di load."); return {}; }
+        if (!engine_) { errors_->set("APL: call Player::init before load."); return {}; }
         try {
             if (mode != LoadMode::Memory && mode != LoadMode::Stream) {
-                errors_->set("APL: modalita' di caricamento non valida."); return {};
+                errors_->set("APL: invalid load mode."); return {};
             }
             std::string error;
             std::unique_ptr<detail::Decoder> decoder = detail::openDecoder(path, error);
@@ -2291,7 +2631,7 @@ public:
             errors_->set("");
             if (mode == LoadMode::Memory) {
                 if (voice->format.frames > voice->memory.max_size()) {
-                    errors_->set("APL: audio troppo grande per la memoria disponibile."); return {};
+                    errors_->set("APL: audio is too large for available memory."); return {};
                 }
                 voice->memory.resize(static_cast<std::size_t>(voice->format.frames));
                 std::size_t read = 0;
@@ -2300,10 +2640,10 @@ public:
             } else {
                 voice->decoder = std::move(decoder); voice->startWorker();
             }
-            if (!engine_->attach(voice)) { errors_->set("APL: limite di 128 suoni raggiunto (rilasciare un Sound)."); return {}; }
+            if (!engine_->attach(voice)) { errors_->set("APL: limit of 128 sounds reached (release a Sound)."); return {}; }
             return Sound(std::move(voice));
         } catch (const std::exception& e) { errors_->set(e.what()); return {}; }
-        catch (...) { errors_->set("APL: caricamento fallito."); return {}; }
+        catch (...) { errors_->set("APL: loading failed."); return {}; }
     }
     void setMasterVolume(float volume) {
         if (!detail::validGain(volume)) return;
