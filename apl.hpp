@@ -2030,7 +2030,7 @@ class Engine {
         auto& a = v.audio;
         Controls next;
         if (!v.controls.read(next)) return;
-        if (next.loopRevision != a.controls.loopRevision && !a.finished) {
+        if (next.loopRevision != a.controls.loopRevision && (!a.finished || a.pendingSeek)) {
             if (!a.pendingSeek)
                 a.pendingPosition = static_cast<double>(v.plan.physical(static_cast<std::uint64_t>(a.timeline)));
             a.pendingLoops = next.loops; a.pendingSeek = true;
@@ -2040,7 +2040,8 @@ class Engine {
             a.pendingLoops = next.loops; a.pendingSeek = true;
         }
         if (next.action != a.controls.action) {
-            if (next.transport == Transport::Playing && a.finished) {
+
+            if (next.transport == Transport::Playing && a.finished && !a.pendingSeek) {
                 a.pendingPosition = 0; a.pendingLoops = next.loops; a.pendingSeek = true;
             }
             a.desiredPlaying = next.transport == Transport::Playing;

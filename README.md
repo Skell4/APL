@@ -4,7 +4,7 @@
 
 [![C++: 17](https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white)](#requirements)
 [![Header-only](https://img.shields.io/badge/header--only-7B68EE)](apl.hpp)
-[![Version: 1.0](https://img.shields.io/badge/version-1.0-7B68EE)](#version-10-scope)
+[![Version: 1.0.1](https://img.shields.io/badge/version-1.0.1-7B68EE)](#version-101-scope)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Platforms: Windows | Linux](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux-0078D4)](#requirements)
 
@@ -15,6 +15,15 @@ No implementation macro, separate library source file, or build system is needed
 APL implements its own decoders, mixer, and resampler. It uses the operating
 system's audio APIs: WASAPI on Windows and ALSA on Linux. No third-party codec
 libraries are required.
+
+## Changes in 1.0.1
+
+This patch fixes playback control handling without changing the public API:
+
+- A seek requested together with play after natural completion keeps the requested
+  position, in both memory and streaming modes, regardless of command order.
+- A new loop count is preserved when natural completion occurs while a seek is
+  still waiting for the internal ramp.
 
 ## Features
 
@@ -39,7 +48,7 @@ libraries are required.
 
 MSVC, GCC/MinGW-w64, and Clang are supported compiler targets. Native lock-free
 atomics and IEEE-754 32-bit `float` are required and checked at compile time.
-macOS and other platforms do not have an audio backend in version 1.0;
+macOS and other platforms do not have an audio backend in version 1.0.1;
 `Player::init()` reports an error on those platforms.
 
 On Linux, ALSA is loaded dynamically. ALSA development headers and `-lasound`
@@ -55,9 +64,13 @@ Place `apl.hpp` next to your source file:
 #include "apl.hpp"
 ```
 
-The included [example.cpp](example.cpp) plays one WAV or MP3 at half volume until
-it finishes. Supply your own audio file; audio files are not bundled with this
-repository. Run the following commands from the repository directory.
+The included [example.cpp](example.cpp) loads `audio.mp3`, plays it, and waits for
+Enter before closing. Put your own `audio.mp3` in the directory you run from, or
+change the filename in the example to your WAV or MP3 file. Audio files are not
+bundled with this repository. Run the commands below from the repository directory.
+
+The example returns `1` if initialization or loading fails. Use
+`Player::lastError()` to get an error description; see [Errors](#errors).
 
 ### Windows: g++ / MinGW-w64
 
@@ -65,14 +78,10 @@ Use a MinGW-w64 distribution with `std::thread` support:
 
 ```powershell
 g++ -std=c++17 -O2 -Wall -Wextra -pthread example.cpp -o example.exe -lole32
-.\example.exe "music.mp3"
+.\example.exe
 ```
 
-For a WAV file:
-
-```powershell
-.\example.exe "sound.wav"
-```
+To use a WAV file, change `"audio.mp3"` to your WAV filename in `example.cpp`.
 
 Only `example.cpp` is compiled: it includes `apl.hpp` automatically. For your
 own application, replace `example.cpp` with your source files and keep the
@@ -85,7 +94,7 @@ Run this in a Developer Command Prompt:
 
 ```bat
 cl /nologo /std:c++17 /EHsc /W4 /permissive- /O2 example.cpp /Fe:example.exe
-example.exe "music.mp3"
+example.exe
 ```
 
 The header links `ole32.lib` automatically through an MSVC pragma, also used by
@@ -95,7 +104,7 @@ The header links `ole32.lib` automatically through an MSVC pragma, also used by
 
 ```sh
 g++ -std=c++17 -O2 -Wall -Wextra -pthread example.cpp -o example -ldl
-./example "music.mp3"
+./example
 ```
 
 Use `clang++` in place of `g++` for Clang. `-ldl` is included for compatibility
@@ -107,7 +116,7 @@ APL opens the ALSA PCM named `default`. Override it for a process with the
 `APL_ALSA_DEVICE` environment variable:
 
 ```sh
-APL_ALSA_DEVICE=plughw:0,0 ./example "music.mp3"
+APL_ALSA_DEVICE=plughw:0,0 ./example
 ```
 
 A hardware PCM can be occupied by another application. The distribution's
@@ -118,7 +127,7 @@ WSL, containers, and servers may have no default ALSA output. Errors such as
 output. To run playback through ALSA's silent output:
 
 ```sh
-APL_ALSA_DEVICE=null ./example "music.mp3"
+APL_ALSA_DEVICE=null ./example
 ```
 
 This processes and discards the audio in real time; it produces no audible
@@ -129,33 +138,18 @@ On WSL, you can also run the Windows build to hear the result through WASAPI.
 
 ```cpp
 #include "apl.hpp"
-
-#include <chrono>
 #include <iostream>
-#include <thread>
 
 int main() {
     apl::Player player;
-    if (!player.init()) {
-        std::cerr << player.lastError() << '\n';
-        return 1;
-    }
+    if (!player.init()) return 1;
 
-    auto sound = player.load("music.mp3");
-    if (!sound.isValid()) {
-        std::cerr << player.lastError() << '\n';
-        return 1;
-    }
+    auto sound = player.load("audio.mp3"); // Use your own WAV or MP3 file.
+    if (!sound.isValid()) return 1;
 
     sound.play();
-    while (sound.isPlaying() && player.lastError().empty()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-
-    if (const auto error = player.lastError(); !error.empty()) {
-        std::cerr << error << '\n';
-        return 1;
-    }
+    std::cout << "Press Enter to close.\n";
+    std::cin.get(); // Keep the program open while the sound plays.
 }
 ```
 
@@ -214,7 +208,7 @@ are clamped to the file's duration; non-finite values are ignored.
 Commands are asynchronous and may be combined before the next audio block.
 `isPlaying()` reflects the requested playing state, including initial streaming
 buffering, and becomes false after natural completion or a pause/stop request.
-It is a status query, not a sample-accurate playback clock. Version 1.0 does not
+It is a status query, not a sample-accurate playback clock. Version 1.0.1 does not
 expose a duration or current-position getter.
 
 ## Volume
@@ -438,7 +432,7 @@ the same C++ handle requires external synchronization against other calls on
 that handle. Retiring a sound while the mixer uses it, or shutting down a player
 with active sounds, is supported.
 
-## Version 1.0 scope
+## Version 1.0.1 scope
 
 The public API does not yet include pan, separate channel-volume controls,
 effects, speed/pitch controls, OGG/FLAC decoding, macOS playback, 3D audio,
@@ -446,13 +440,17 @@ recording, or MIDI. The internal backend and decoder interfaces separate those
 components from the mixer. Independent channel gains and an effect insertion
 point are reserved internally for future work.
 
-The implementation has been checked with GCC/MinGW and MSVC on Windows, and GCC
-on Linux. Validation covered decoding, seeking, looping, streaming, mixing,
-resource lifetime, and allocation-free rendering. MP3 samples were compared
-against an independent decoder. Linux checks included virtual ALSA outputs and
-address/undefined-behavior sanitizers. The Clang frontend passed syntax checks;
-a full Clang build and physical Linux audio-device latency have not been
-validated. Test tools and generated binaries are not part of this release folder.
+Version 1.0.1 passed nine offline test groups on Windows with GCC/MinGW, including
+regressions for seek/play ordering and loop counts at natural completion. Rendering
+allocated no memory during those checks. Additional public-control checks passed
+200 repeated cases and 72 edge cases with different sample rates and block sizes.
+The MP3 suite passed 17 reference files, streaming/seek checks, and 400 mutated files.
+
+Earlier version 1.0 validation also covered MSVC on Windows and GCC on Linux,
+including virtual ALSA outputs and address/undefined-behavior sanitizers. Those
+platform checks were not repeated for this patch. A full Clang build and physical
+Linux audio-device latency remain unvalidated. Test tools and generated binaries
+are not part of this release folder.
 
 ## Format references
 
